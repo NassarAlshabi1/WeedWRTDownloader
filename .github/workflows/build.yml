@@ -56,12 +56,15 @@ jobs:
           java-version: '17'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK components
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null
+          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
+          SDKM="/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -f "$SDKM" ]; then
+            SDKM="$(find /usr/local/lib/android/sdk/cmdline-tools -name sdkmanager 2>/dev/null | sort | tail -1)"
+          fi
+          echo "Using sdkmanager: $SDKM"
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1 || echo "sdkmanager install step failed - relying on preinstalled SDK components"
 
       # Optional: replace the committed demo keystore with your own private key.
       # Secrets: KEYSTORE_BASE64 (base64 of the .jks), KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
