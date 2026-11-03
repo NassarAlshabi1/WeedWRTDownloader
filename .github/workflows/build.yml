@@ -1,0 +1,162 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      openwrt_version:
+        description: 'OpenWrt version'
+        required: false
+        default: '23.05.5'
+        type: string
+      target:
+        description: 'Target platform'
+        required: false
+        default: 'ramips/mt7621'
+        type: string
+      arch:
+        description: 'Package architecture'
+        required: false
+        default: 'mipsel_24kc'
+        type: string
+      extra_packages:
+        description: 'Extra packages (comma separated, e.g. luci-app-aria2)'
+        required: false
+        default: ''
+        type: string
+      create_release:
+        description: 'Publish a GitHub Release from this run'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build:
+    name: Build APK, CLI JAR and offline LuCI bundle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      OWRT_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.openwrt_version || '23.05.5' }}
+      OWRT_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'ramips/mt7621' }}
+      OWRT_ARCH: ${{ github.event_name == 'workflow_dispatch' && inputs.arch || 'mipsel_24kc' }}
+      EXTRA_PACKAGES: ${{ github.event_name == 'workflow_dispatch' && inputs.extra_packages || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null
+
+      # Optional: replace the committed demo keystore with your own private key.
+      # Secrets: KEYSTORE_BASE64 (base64 of the .jks), KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
+      - name: Override signing key from secrets (optional)
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android-app/keystore/weedwrt-release.jks
+          cat > android-app/keystore.properties <<EOF
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          EOF
+
+      - name: Build CLI JAR and signed release APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :cli:fatJar :android-app:assembleRelease --no-daemon --stacktrace
+
+      - name: Verify APK signature
+        run: |
+          APK="android-app/build/outputs/apk/release/android-app-release.apk"
+          if [ ! -f "$APK" ]; then
+            APK=$(ls android-app/build/outputs/apk/release/*.apk | head -1)
+          fi
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$APK" | tee apk-signature.txt
+
+      - name: Generate offline LuCI bundle
+        run: |
+          java -jar cli/build/libs/WeedWRT-fat.jar "$OWRT_VERSION" "$OWRT_TARGET" "$OWRT_ARCH" $EXTRA_PACKAGES
+          ls -la output/
+
+      - name: Collect release artifacts
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VER="$GITHUB_REF_NAME"
+          else
+            VER="dev-$(echo "$GITHUB_SHA" | cut -c1-7)"
+          fi
+          mkdir -p dist
+          APK="android-app/build/outputs/apk/release/android-app-release.apk"
+          if [ ! -f "$APK" ]; then
+            APK=$(ls android-app/build/outputs/apk/release/*.apk | head -1)
+          fi
+          cp "$APK" "dist/WeedWRT-Downloader_${VER}_signed.apk"
+          cp cli/build/libs/WeedWRT-fat.jar "dist/WeedWRT-Downloader-cli_${VER}.jar"
+          cp output/*.zip dist/
+          cp apk-signature.txt dist/
+          cd dist && sha256sum * > SHA256SUMS.txt
+          echo "--- dist contents ---"
+          ls -la
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: weedwrt-build
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.create_release)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: weedwrt-build
+          path: dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            ## WeedWRT Downloader
+
+            Offline LuCI installer generator for OpenWrt.
+
+            ### Downloads
+            | File | Description |
+            |------|-------------|
+            | `WeedWRT-Downloader_*_signed.apk` | Android app (signed release build) |
+            | `weedwrt_*.zip` | Ready-made offline LuCI bundle (packages + install script) |
+            | `WeedWRT-Downloader-cli_*.jar` | Desktop CLI tool (Java 8+) |
+            | `SHA256SUMS.txt` | Checksums for all files |
+
+            ### How to use the offline bundle (router)
+            1. Copy the `weedwrt_*.zip` to your router: `scp weedwrt_23.05.5_mipsel_24kc.zip root@192.168.1.1:/tmp/`
+            2. On the router: `cd /tmp && unzip weedwrt_*.zip && sh weedwrt.sh`
+            3. Open `http://192.168.1.1` in your browser.
+
+            ### كيفية استخدام الحزمة الجاهزة (على الراوتر)
+            ١. انسخ ملف `weedwrt_*.zip` إلى الراوتر: `scp weedwrt_23.05.5_mipsel_24kc.zip root@192.168.1.1:/tmp/`
+            ٢. على الراوتر نفّذ: `cd /tmp && unzip weedwrt_*.zip && sh weedwrt.sh`
+            ٣. افتح `http://192.168.1.1` من المتصفح — ستجد واجهة LuCI جاهزة.

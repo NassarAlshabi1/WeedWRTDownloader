@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WeedWRT Downloader</string>
+    <string name="app_title">WeedWRT Downloader</string>
+    <string name="app_subtitle">Offline LuCI installer generator for OpenWrt</string>
+    <string name="label_version">OpenWrt version</string>
+    <string name="hint_version">e.g. 23.05.5 or snapshot</string>
+    <string name="label_target">Target platform</string>
+    <string name="hint_target">e.g. ramips/mt7621</string>
+    <string name="label_arch">Package architecture</string>
+    <string name="hint_arch">e.g. mipsel_24kc</string>
+    <string name="label_extras">Extra packages (optional, comma separated)</string>
+    <string name="hint_extras">luci-app-aria2, luci-app-adblock, ...</string>
+    <string name="button_build">Build offline package</string>
+    <string name="button_share">Share ZIP</string>
+</resources>
